@@ -128,6 +128,4 @@ class BaseSessionService(abc.ABC):
     if not event.actions or not event.actions.state_delta:
       return
     for key, value in event.actions.state_delta.items():
-      if key.startswith(State.TEMP_PREFIX):
-        continue
       session.state.update({key: value})

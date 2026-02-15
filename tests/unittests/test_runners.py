@@ -1237,5 +1237,90 @@ class TestRunnerInferAgentOrigin:
     assert "actual_name" in runner._app_name_alignment_hint
 
 
+@pytest.mark.asyncio
+async def test_temp_state_accessible_in_callbacks_but_not_persisted():
+  """Tests that temp: state variables are accessible during lifecycle callbacks
+  but not persisted in the session."""
+
+  # Track what state was seen during callbacks
+  state_seen_in_before_agent = {}
+  state_seen_in_after_agent = {}
+
+  class StateAccessPlugin(BasePlugin):
+    """Plugin that accesses state during callbacks."""
+
+    async def before_agent_callback(self, *, agent, callback_context):
+      # Set a temp state variable
+      callback_context.state["temp:test_key"] = "test_value"
+      callback_context.state["normal_key"] = "normal_value"
+
+      # Verify we can read it back immediately
+      state_seen_in_before_agent["temp:test_key"] = callback_context.state.get(
+          "temp:test_key"
+      )
+      state_seen_in_before_agent["normal_key"] = callback_context.state.get(
+          "normal_key"
+      )
+      return None
+
+    async def after_agent_callback(self, *, agent, callback_context):
+      # Verify temp state is still accessible during the same invocation
+      state_seen_in_after_agent["temp:test_key"] = callback_context.state.get(
+          "temp:test_key"
+      )
+      state_seen_in_after_agent["normal_key"] = callback_context.state.get(
+          "normal_key"
+      )
+      return None
+
+  # Setup
+  session_service = InMemorySessionService()
+  plugin = StateAccessPlugin(name="state_access")
+
+  agent = MockAgent(name="test_agent")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=agent,
+      session_service=session_service,
+      plugins=[plugin],
+      auto_create_session=True,
+  )
+
+  # Run the agent
+  events = []
+  async for event in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="test message")]
+      ),
+  ):
+    events.append(event)
+
+  # Verify temp state was accessible during callbacks
+  assert state_seen_in_before_agent["temp:test_key"] == "test_value"
+  assert state_seen_in_before_agent["normal_key"] == "normal_value"
+  assert state_seen_in_after_agent["temp:test_key"] == "test_value"
+  assert state_seen_in_after_agent["normal_key"] == "normal_value"
+
+  # Verify temp state is NOT persisted in the session
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+  )
+
+  # Normal state should be persisted
+  assert session.state.get("normal_key") == "normal_value"
+
+  # Temp state should NOT be persisted
+  assert "temp:test_key" not in session.state
+
+  # Verify temp state is also not in any event's state_delta
+  for event in session.events:
+    if event.actions and event.actions.state_delta:
+      assert "temp:test_key" not in event.actions.state_delta
+
+
 if __name__ == "__main__":
   pytest.main([__file__])

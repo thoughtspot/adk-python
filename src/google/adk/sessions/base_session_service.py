@@ -106,8 +106,11 @@ class BaseSessionService(abc.ABC):
     """Appends an event to a session object."""
     if event.partial:
       return event
-    event = self._trim_temp_delta_state(event)
+    # Update session state with ALL keys (including temp:) so they're accessible
+    # during callbacks within the same invocation
     self._update_session_state(session, event)
+    # Trim temp: keys from the event before persisting to avoid storing them
+    event = self._trim_temp_delta_state(event)
     session.events.append(event)
     return event
 
@@ -127,5 +130,4 @@ class BaseSessionService(abc.ABC):
     """Updates the session state based on the event."""
     if not event.actions or not event.actions.state_delta:
       return
-    for key, value in event.actions.state_delta.items():
-      session.state.update({key: value})
+    session.state.update(event.actions.state_delta)

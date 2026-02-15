@@ -1287,15 +1287,14 @@ async def test_temp_state_accessible_in_callbacks_but_not_persisted():
   )
 
   # Run the agent
-  events = []
-  async for event in runner.run_async(
+  async for _ in runner.run_async(
       user_id=TEST_USER_ID,
       session_id=TEST_SESSION_ID,
       new_message=types.Content(
           role="user", parts=[types.Part(text="test message")]
       ),
   ):
-    events.append(event)
+    pass
 
   # Verify temp state was accessible during callbacks
   assert state_seen_in_before_agent["temp:test_key"] == "test_value"
@@ -1320,6 +1319,79 @@ async def test_temp_state_accessible_in_callbacks_but_not_persisted():
   for event in session.events:
     if event.actions and event.actions.state_delta:
       assert "temp:test_key" not in event.actions.state_delta
+
+
+@pytest.mark.asyncio
+async def test_temp_state_from_state_delta_accessible_in_callbacks():
+  """Tests that temp: state set via run_async state_delta parameter is
+  accessible during lifecycle callbacks but not persisted."""
+
+  # Track what state was seen during callbacks
+  state_seen_in_before_agent = {}
+
+  class StateAccessPlugin(BasePlugin):
+    """Plugin that accesses state during callbacks."""
+
+    async def before_agent_callback(self, *, agent, callback_context):
+      # Check if temp state from state_delta is accessible
+      state_seen_in_before_agent["temp:from_run_async"] = (
+          callback_context.state.get("temp:from_run_async")
+      )
+      state_seen_in_before_agent["normal:from_run_async"] = (
+          callback_context.state.get("normal:from_run_async")
+      )
+      return None
+
+  # Setup
+  session_service = InMemorySessionService()
+  plugin = StateAccessPlugin(name="state_access")
+
+  agent = MockAgent(name="test_agent")
+  runner = Runner(
+      app_name=TEST_APP_ID,
+      agent=agent,
+      session_service=session_service,
+      plugins=[plugin],
+      auto_create_session=True,
+  )
+
+  # Run the agent with state_delta containing both temp and normal keys
+  async for _ in runner.run_async(
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+      new_message=types.Content(
+          role="user", parts=[types.Part(text="test message")]
+      ),
+      state_delta={
+          "temp:from_run_async": "temp_value",
+          "normal:from_run_async": "normal_value",
+      },
+  ):
+    pass
+
+  # Verify temp state from state_delta WAS accessible during callbacks
+  assert (
+      state_seen_in_before_agent["temp:from_run_async"] == "temp_value"
+  ), "temp: state from state_delta should be accessible in callbacks"
+  assert state_seen_in_before_agent["normal:from_run_async"] == "normal_value"
+
+  # Verify temp state is NOT persisted in the session
+  session = await session_service.get_session(
+      app_name=TEST_APP_ID,
+      user_id=TEST_USER_ID,
+      session_id=TEST_SESSION_ID,
+  )
+
+  # Normal state should be persisted
+  assert session.state.get("normal:from_run_async") == "normal_value"
+
+  # Temp state should NOT be persisted
+  assert "temp:from_run_async" not in session.state
+
+  # Verify temp state is also not in any event's state_delta
+  for event in session.events:
+    if event.actions and event.actions.state_delta:
+      assert "temp:from_run_async" not in event.actions.state_delta
 
 
 if __name__ == "__main__":
